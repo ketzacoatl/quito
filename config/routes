@@ -12,3 +12,5 @@
 /comments CommentR POST
 
 /profile ProfileR GET
+
+/cloud-env/new/ CloudEnvR GET POST
