@@ -16,3 +16,9 @@ Comment json -- Adding "json" causes ToJSON and FromJSON instances to be derived
     userId UserId Maybe
     deriving Eq
     deriving Show
+CloudEnv json
+    name Text
+    description Text
+    moduleUrl Text
+    deriving Eq
+    deriving Show
