@@ -1,7 +1,9 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE ExplicitForAll #-}
@@ -13,16 +15,39 @@ import Import.NoFoundation
 import Database.Persist.Sql (ConnectionPool, runSqlPool)
 import Text.Hamlet          (hamletFile)
 import Text.Jasmine         (minifym)
+import Text.Read            (readMaybe)
 
 -- Used only when in "auth-dummy-login" setting is enabled.
 import Yesod.Auth.Dummy
 
+import Yesod.Auth.Message( AuthMessage( InvalidLogin ) )
+
+--import Yesod.Auth.Hardcoded (YesodAuthHardcoded)
+import Yesod.Auth.Hardcoded
 import Yesod.Auth.OpenId    (authOpenId, IdentifierType (Claimed))
 import Yesod.Default.Util   (addStaticContentExternal)
 import Yesod.Core.Types     (Logger)
 import qualified Yesod.Core.Unsafe as Unsafe
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Text.Encoding as TE
+
+-- yesod-auth-1.4.21/Yesod-Auth-Hardcoded.html
+-- has more info on these details
+data AdminUser = AdminUser
+  { adminUsername :: Text
+  , adminPassword :: Text }
+  deriving Show
+
+adminUsers :: [AdminUser]
+adminUsers = [AdminUser "admin" "seenoevil"]
+
+lookupAdmin :: Text -> Maybe AdminUser
+lookupAdmin a = find (\u -> adminUsername u == a) adminUsers
+--lookupAdmin a = find a adminUsers
+
+instance PathPiece (Either UserId Text) where
+  fromPathPiece = readMaybe . unpack
+  toPathPiece = pack . show
 
 -- | The foundation datatype for your application. This can be a good place to
 -- keep settings and values requiring initialization before your application
@@ -197,11 +222,12 @@ instance YesodPersist App where
     runDB action = do
         master <- getYesod
         runSqlPool action $ appConnPool master
+
 instance YesodPersistRunner App where
     getDBRunner = defaultGetDBRunner appConnPool
 
 instance YesodAuth App where
-    type AuthId App = UserId
+    type AuthId App = Either UserId Text
 
     -- Where to send a user after successful login
     loginDest _ = HomeR
@@ -210,17 +236,26 @@ instance YesodAuth App where
     -- Override the above two destinations when a Referer: header is present
     redirectToReferer _ = True
 
-    authenticate creds = runDB $ do
-        x <- getBy $ UniqueUser $ credsIdent creds
-        case x of
-            Just (Entity uid _) -> return $ Authenticated uid
-            Nothing -> Authenticated <$> insert User
-                { userIdent = credsIdent creds
-                , userPassword = Nothing
-                }
+    authenticate Creds{..} =
+      return
+        (case credsPlugin of
+            -- backdoor with these creds
+            "hardcoded" ->
+              case lookupAdmin credsIdent of
+                Nothing -> UserError InvalidLogin
+                Just u  -> Authenticated (Right (adminUsername u)))
+            -- do the normal thing
+--          _ -> runDB $ do
+--              x <- getBy $ UniqueUser $ credsIdent creds
+--              case x of
+--                  Just (Entity uid _) -> return $ Authenticated uid
+--                  Nothing -> Authenticated <$> insert User
+--                      { userIdent = credsIdent creds
+--                      , userPassword = Nothing
+--                      })
 
     -- You can add other plugins like Google Email, email or OAuth here
-    authPlugins app = [authOpenId Claimed []] ++ extraAuthPlugins
+    authPlugins app = [authOpenId Claimed []] ++ [authHardcoded] ++ extraAuthPlugins
         -- Enable authDummy login if enabled.
         where extraAuthPlugins = [authDummy | appAuthDummyLogin $ appSettings app]
 
@@ -234,7 +269,30 @@ isAuthenticated = do
         Nothing -> Unauthorized "You must login to access this page"
         Just _ -> Authorized
 
-instance YesodAuthPersist App
+-- updated the following for auth, based on the instructions in
+-- yesod-auth-1.4.21/Yesod-Auth-Hardcoded.html
+instance YesodAuthPersist App where
+  type AuthEntity App = Either User AdminUser
+
+  getAuthEntity (Left uid) =
+    do x <- runDB (get uid)
+       return (Left <$> x)
+  getAuthEntity (Right username) = return (Right <$> lookupAdmin username)
+
+-- added the following for auth, based on the instructions in
+-- yesod-auth-1.4.21/Yesod-Auth-Hardcoded.html
+instance YesodAuthHardcoded App where
+  validatePassword u = return . validPassword u
+  doesUserNameExist  = return . isJust . lookupAdmin
+
+-- added the following for auth, based on the instructions in
+-- yesod-auth-1.4.21/Yesod-Auth-Hardcoded.html
+validPassword :: Text -> Text -> Bool
+validPassword u p =
+--  case find (m -> adminUsername a == u && adminPassword a == p) adminUsers of
+  case find (\a -> adminUsername a == u && adminPassword a == p) adminUsers of
+    Just _ -> True
+    _      -> False
 
 -- This instance is required to use forms. You can modify renderMessage to
 -- achieve customized and internationalized form validation messages.
